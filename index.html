@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>pdf-stepify</title>
+        <script src="./assets/pdf-lib.js"></script>
+        <script src="./assets/pdf.js"></script>
+        <style>
+
+            /* 2-column flex layout */
+            .column-container {
+                display: flex;
+                flex-wrap: wrap;
+                width: 100%;
+            }
+            .left-column {
+                flex-basis: 0;
+                margin-right: 2em;
+                margin-bottom: 2em;
+            }
+            .right-column {
+                flex-grow: 1;
+                min-width: 50em;
+            }
+
+            /* Example "pages" */
+            .example {
+                display: flex;
+                width: fit-content;
+                align-items: center;
+                margin-top: 1em;
+                margin-bottom: 1em;
+            }
+            .example div {
+                width: fit-content;
+                margin: 0.3em;
+            }
+            .example-page {
+                border: 1px solid black;
+                width: fit-content;
+                padding: 0.5em;
+            }
+            .example-page div {
+                margin-left: -0.5em; /* Cut into page's margin */
+                padding-left: 1em;
+                width: 100%; /* Total width plus page's margin's */
+            }
+            .example-page div.highlighted {
+                background-color: #FFFF00;
+            }
+
+            /* File input */
+            .upload-button {
+                display: none;
+            }
+            .upload-label {
+                display: inline-block;
+                padding: 10px 20px;
+                background-color: #007bff;
+                color: #fff;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+            }
+            .upload-label:hover {
+                background-color: #0056b3;
+            }
+            .upload-label:active {
+                background-color: #003a80;
+            }
+
+        </style>
+    </head>
+    <body>
+
+        <div class="column-container">
+            <div class="left-column">
+
+                <h1>PDF-Stepify</h1>
+
+                <p>
+                    Highlights each numbered step in a PDF by duplicating a
+                    page for each step and highlighting the current step.
+                </p>
+
+                <div class="example">
+                    <div class="example-page">
+                        Process&nbsp;Steps:
+                        <div>1.&nbsp;Step&nbsp;1</div>
+                        <div>2.&nbsp;Step&nbsp;2</div>
+                        <div>3.&nbsp;Step&nbsp;3</div>
+                    </div>
+                    <div style="font-size: 4em;">
+                        &rarr;
+                    </div>
+                    <div class="example-page">
+                        Process&nbsp;Steps:
+                        <div class="highlighted">1.&nbsp;Step&nbsp;1</div>
+                        <div>2.&nbsp;Step&nbsp;2</div>
+                        <div>3.&nbsp;Step&nbsp;3</div>
+                    </div>
+                    <div class="example-page">
+                        Process&nbsp;Steps:
+                        <div>1.&nbsp;Step&nbsp;1</div>
+                        <div class="highlighted">2.&nbsp;Step&nbsp;2</div>
+                        <div>3.&nbsp;Step&nbsp;3</div>
+                    </div>
+                    <div class="example-page">
+                        Process&nbsp;Steps:
+                        <div>1.&nbsp;Step&nbsp;1</div>
+                        <div>2.&nbsp;Step&nbsp;2</div>
+                        <div class="highlighted">3.&nbsp;Step&nbsp;3</div>
+                    </div>
+                </div>
+
+                <p>
+                    This is useful for putting step-by-step instructions onto an
+                    e-reader. The instructions can be followed page-by-page to
+                    ensure no step is skipped.
+
+                    This is all done all in Javascript; the PDF never leaves
+                    your computer.
+                </p>
+
+                <form enctype="multipart/form-data">
+                    <label class="upload-label" for="upload-button">Upload PDF</label>
+                    <input class="upload-button" id="upload-button" type="file" accept="application/pdf">
+                </form>
+            </div>
+            <div class="right-column">
+                <iframe id="pdf" style="width: 100%; height: 90vh;"></iframe>
+            </div>
+        </div>
+
+        <script>
+            pdfjsLib.GlobalWorkerOptions.workerSrc = "./assets/pdf.worker.js"
+
+            /*
+             * We use two different PDF libraries here. pdf.js reads the PDF to
+             * get the locations we want to highlight and duplicate pages for
+             * (the "steps"). pdf-lib is then used to actually modify the PDF
+             * and output it.
+             */
+
+            /* Should the string be counted as a "step"? */
+            function textMatches(str) {
+                const re1 = /^[0-9]+\.$/
+                const re2 = /^[0-9]+\)/
+                return re1.test(str) || re2.test(str)
+            }
+
+            /* Given a pdf's contents as an ArrayBuffer, returns a list of
+             * locations of each step. Returns a list of:
+             * {
+             *   page: number,  // page text is on (0-indexed)
+             *   text: string,  // String matched indicating this is a step
+             *   y: number,  // Y position of text
+             *   height: number,  // Height of the text
+             * }
+             */
+            async function getStepPositions(pdfBytes) {
+                const pdf = await pdfjsLib.getDocument(pdfBytes).promise
+
+                let steps = []
+                let stepLocations = []
+                for(let pageNum=0; pageNum<pdf.numPages; pageNum++) {
+                    const page = await pdf.getPage(pageNum+1)
+
+                    const textContent = await page.getTextContent()
+                    textContent.items.forEach((textItem) => {
+
+                        // Deduplicate step locations
+                        const y = textItem.transform[5]
+                        if(!stepLocations.includes([pageNum, y])) {
+
+                            if(textMatches(textItem.str)) {
+                                // Add a match
+                                stepLocations.push([pageNum, y])
+                                steps.push({
+                                    page: pageNum,
+                                    text: textItem.str,
+                                    y: y,
+                                    height: textItem.height,
+                                })
+                            }
+                        }
+
+                    })
+
+                }
+                return steps
+            }
+
+            async function processFile() {
+                let uploadInput = document.getElementById("upload-button")
+                if(uploadInput.files.length != 1) {
+                    return
+                }
+                const file = uploadInput.files[0]
+
+                // Clear iframe while loading
+                document.getElementById('pdf').src = "";
+
+                // Get list of steps
+                const steps = await getStepPositions(await file.arrayBuffer())
+                steps.sort((a, b) => {
+                    // Sort by page, then by Y location
+                    if(a.page < b.page) {
+                        return -1
+                    }
+                    // Greater Y is higher on the page, so an earlier step.
+                    return a.y > b.y ? -1 : 1
+                })
+
+                // Group steps by the page they're on
+                let stepsByPage = new Map()
+                steps.forEach((step) => {
+                    if(stepsByPage.has(step.page)) {
+                        stepsByPage.get(step.page).push(step)
+                    } else {
+                        stepsByPage.set(step.page, [step])
+                    }
+                })
+
+                // Read PDF from form
+                const pdf = await PDFLib.PDFDocument.load(await file.arrayBuffer());
+
+                // Duplicate pages for each step
+                // Reverse order we iterate so we can insert pages without
+                // worrying about affecting later page numbers.
+                const pages = pdf.getPages()
+                for(const [pageNum, steps] of [...stepsByPage].reverse()) {
+                    const page = pages[pageNum]
+                    for(const step of steps.reverse()) {
+
+                        // Copy page, but if it's the first step on the page,
+                        // just use the original page.
+                        let pageToMark
+                        if(step === steps[steps.length-1]) {
+                            pageToMark = page
+                        } else {
+                            [pageToMark] = await pdf.copyPages(pdf, [pageNum])
+                            pdf.insertPage(pageNum+1, pageToMark)
+                        }
+
+                        // Make highlight
+                        pageToMark.drawRectangle({
+                            x: 0,
+                            y: step.y,
+                            width: page.getWidth(),
+                            height: step.height,
+                            color: PDFLib.rgb(1, 1, 0),
+                            opacity: 0.5,
+                        })
+
+                    }
+                }
+
+                // Write PDF to iframe
+                const pdfDataUri = await pdf.saveAsBase64({ dataUri: true });
+                document.getElementById('pdf').src = pdfDataUri;
+
+            }
+
+            let uploadInput = document.getElementById("upload-button")
+            uploadInput.addEventListener("change", processFile, false)
+
+        </script>
+    </body>
+</html>
